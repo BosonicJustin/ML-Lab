@@ -5,6 +5,8 @@ import equinox as eqx
 import jax
 from jax.lax import reduce_window, max as jax_max
 
+import time
+
 
 class ImageConvolution(eqx.Module):
     kernel: jnp.ndarray
@@ -74,6 +76,7 @@ class UNet(eqx.Module):
 
     max_pool2: callable = eqx.field(static=True)
 
+    # For now using images 572 x 572 strictly - resize if needed
     def __init__(self, im_channels=1, num_classes=2):
         # For downsampling
         self.joint_conv1 = JointConvLayer(n_features=64, kernel_size=3, im_channels=im_channels)
@@ -132,6 +135,23 @@ class UNet(eqx.Module):
 if __name__ == "__main__":
     u = UNet(im_channels=1)
 
+    batch = 20
+
+    @jax.jit
+    def forward(x):
+        return u(x)
+
     key = jax.random.PRNGKey(0)
-    x = jax.random.normal(key, (1, 1, 572, 572))
-    print('U OUTPUT', u(x).shape)
+    x = jax.random.normal(key, (batch, 1, 572, 572))
+
+    print("Warming up JIT...")
+    _ = forward(x)  # Compile
+
+    print("Measuring runtime...")
+    start = time.time()
+    output = forward(x).block_until_ready()
+    end = time.time()
+
+    print("U OUTPUT", output.shape)
+    print(f"Execution time for batch of 10: {end - start:.4f} seconds")
+    print("TOOK", (end - start) / batch, 'per element')
