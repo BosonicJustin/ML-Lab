@@ -114,8 +114,7 @@ def main():
     
     # Create dataset builder and get splits
     dataset_builder = ProductDatasetBuilder(
-        products_dir="./products",
-        val_split=1/3,
+        val_split=0.1,
         seed=42
     )
     
@@ -136,7 +135,7 @@ def main():
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=3,
+        batch_size=5,
         shuffle=True,
         num_workers=4,
         collate_fn=collate_fn
@@ -144,7 +143,7 @@ def main():
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=8,  # Can use larger batch size for validation
+        batch_size=3,  # Can use larger batch size for validation
         shuffle=False,
         num_workers=4,
         collate_fn=collate_fn

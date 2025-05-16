@@ -1,7 +1,9 @@
 torch>=2.0.0
 torchvision>=0.15.0
-transformers>=4.30.0
 Pillow>=9.0.0
-tqdm
-numpy
-open_clip_torch
+numpy>=1.21.0
+requests>=2.28.0
+supabase>=1.0.0
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+open_clip_torch>=2.20.0

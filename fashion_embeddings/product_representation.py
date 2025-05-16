@@ -243,7 +243,7 @@ class ProductEncoder(nn.Module):
             images: Tensor of shape [B, N, C, H, W]
             description_texts: List of product descriptions
             image_mask: Boolean tensor of shape [B, N]
-            
+                       
         Returns:
             product_embedding: Tensor of shape [B, embedding_dim]
         """
