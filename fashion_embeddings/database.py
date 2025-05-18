@@ -1,4 +1,5 @@
 from supabase import create_client
+import supabase
 from typing import List, Dict, Any
 
 
@@ -39,174 +40,83 @@ class SupabaseClient:
         # Initialize Supabase client
         self.client = create_client(url, key)
         SupabaseClient._instance = self
-        
+
+
     def fetch_product_ids(self) -> List[str]:
-        """
-        Fetch all product IDs from the database.
+        """Fetch all product IDs from the database."""
+        all_ids = []
+        page_size = 1000
+        start = 0
         
-        Returns:
-            List of product IDs as strings
-        """
-        try:
-            # First try to get the count
-            count = self.get_product_count()
-            print(f"Total products in table: {count}")
-            
-            # Try a basic select query
-            response = self.client.schema(self.SCHEMA) \
-                .from_(self.TABLE_NAME) \
-                .select('id') \
+        while True:
+            response = (
+                self.client.schema(self.SCHEMA)
+                .table(self.TABLE_NAME)
+                .select("id")
+                .range(start, start + page_size - 1)
                 .execute()
+            )
             
-            print("Response metadata:", {
-                "status_code": getattr(response, 'status_code', None),
-                "data_length": len(response.data) if response.data else 0,
-                "has_error": hasattr(response, 'error') and response.error is not None
-            })
-            
-            if hasattr(response, 'error') and response.error:
-                print("Query error:", response.error)
-                return []
-                
             if not response.data:
-                print("No data returned. Trying sample query...")
-                # Try selecting all columns with limit 1 to see the structure
-                sample_response = self.client.schema(self.SCHEMA) \
-                    .from_(self.TABLE_NAME) \
-                    .select('*') \
-                    .limit(1) \
-                    .execute()
-                    
-                print("Sample query response:", {
-                    "has_data": bool(sample_response.data),
-                    "columns": list(sample_response.data[0].keys()) if sample_response.data else None
-                })
+                break
                 
-            return [str(row['id']) for row in response.data] if response.data else []
+            all_ids.extend(item['id'] for item in response.data)
+            start += page_size
             
-        except Exception as e:
-            print(f"Error fetching product IDs: {str(e)}")
-            return []
+            if len(response.data) < page_size:
+                break
+                
+        return all_ids
     
     def fetch_products_by_ids(self, product_ids: List[str]) -> List[Dict[str, Any]]:
         """
-        Fetch specific products by their IDs.
+        Fetch products by their IDs.
         
         Args:
             product_ids: List of product IDs to fetch
             
         Returns:
-            List of product dictionaries
+            List of product dictionaries containing all fields
         """
-        try:
-            response = self.client.schema(self.SCHEMA) \
-                .from_(self.TABLE_NAME) \
-                .select('*') \
-                .in_('id', product_ids) \
-                .execute()
-                
-            if hasattr(response, 'error') and response.error:
-                print("Query error:", response.error)
-                return []
-                
-            return response.data if response.data else []
-            
-        except Exception as e:
-            print(f"Error fetching products by IDs: {str(e)}")
-            return []
-
-    def test_connection(self) -> bool:
-        """
-        Test database connection and permissions.
+        # Fetch in batches to avoid hitting API limits
+        batch_size = 100
+        all_products = []
         
-        Returns:
-            bool: True if connection and permissions are valid
-        """
-        try:
-            # Test basic connection
-            print("Testing database connection...")
-            
-            # Test schema access
-            schema_response = self.client.rpc('get_schema_name').execute()
-            print("Current schema:", schema_response.data)
-            
-            # Test table access
-            table_response = self.client.schema(self.SCHEMA) \
-                .from_(self.TABLE_NAME) \
-                .select('count(*)', count='exact') \
-                .limit(1) \
+        for i in range(0, len(product_ids), batch_size):
+            batch_ids = product_ids[i:i + batch_size]
+            response = (
+                self.client.schema(self.SCHEMA)
+                .table(self.TABLE_NAME)
+                .select("*")
+                .in_("id", batch_ids)
                 .execute()
+            )
+            all_products.extend(response.data)
             
-            print("Table access test:", {
-                "schema": self.SCHEMA,
-                "table": self.TABLE_NAME,
-                "success": bool(table_response.data),
-                "row_count": table_response.count if hasattr(table_response, 'count') else None
-            })
-            
-            # Test RLS policies
-            policy_response = self.client.rpc('get_policies', {
-                'table_name': f"{self.SCHEMA}.{self.TABLE_NAME}"
-            }).execute()
-            
-            print("RLS policies:", policy_response.data if hasattr(policy_response, 'data') else None)
-            
-            return True
-            
-        except Exception as e:
-            print(f"Connection test failed: {str(e)}")
-            return False
+        return all_products
 
-    def verify_table_structure(self) -> bool:
-        """
-        Verify that the table has the expected structure.
-        
-        Returns:
-            bool: True if table structure matches expected schema
-        """
-        try:
-            # Get table information
-            table_info = self.client.rpc('get_table_info', {
-                'table_name': f"{self.SCHEMA}.{self.TABLE_NAME}"
-            }).execute()
-            
-            expected_columns = {
-                'id': 'uuid',
-                'generated_description': 'text',
-                'compressed_jpg_urls': 'text[]',
-                'brand_id': 'uuid',
-                'title': 'text',
-                'url': 'text',
-                'category': 'text',
-                'style': 'text',
-                'queries': 'text[]',
-                'created_at': 'timestamp'
-            }
-            
-            if not table_info.data:
-                print("Could not retrieve table information")
-                return False
-                
-            actual_columns = {col['column_name']: col['data_type'] for col in table_info.data}
-            
-            # Compare expected vs actual
-            missing_columns = set(expected_columns.keys()) - set(actual_columns.keys())
-            extra_columns = set(actual_columns.keys()) - set(expected_columns.keys())
-            mismatched_types = {
-                col: (expected_columns[col], actual_columns[col])
-                for col in set(expected_columns.keys()) & set(actual_columns.keys())
-                if expected_columns[col] != actual_columns[col]
-            }
-            
-            print("Table structure verification:", {
-                "missing_columns": list(missing_columns) if missing_columns else None,
-                "extra_columns": list(extra_columns) if extra_columns else None,
-                "mismatched_types": mismatched_types if mismatched_types else None,
-                "is_valid": not (missing_columns or mismatched_types)
-            })
-            
-            return not (missing_columns or mismatched_types)
-            
-        except Exception as e:
-            print(f"Table structure verification failed: {str(e)}")
-            return False
+
+def main():
+    """
+    Initialize database client with credentials from config.
+    """
+    from config import get_supabase_credentials
+    
+    # Get credentials
+    credentials = get_supabase_credentials()
+    
+    # Initialize client
+    db = SupabaseClient.get_instance(
+        url=credentials['url'],
+        key=credentials['key']
+    )
+
+    product_ids = db.fetch_product_ids()
+
+    products = db.fetch_products_by_ids(product_ids[100: 500])
+
+    print(products)
+
+
+if __name__ == "__main__":
+    main()

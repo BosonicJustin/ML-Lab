@@ -9,17 +9,19 @@ from io import BytesIO
 from typing import List, Optional, Tuple, Dict, Set
 import random
 from functools import lru_cache
+import pathlib
 
 from database import SupabaseClient
 from models import Product
 from config import get_supabase_credentials
 
+import torchvision
 
 class ProductDataset(Dataset):
     """
     Dataset for loading product data from Supabase, can be used for both training and validation.
     """
-    def __init__(self, product_ids: List[str], db: SupabaseClient, transform=None, mode="train", batch_size=32):
+    def __init__(self, product_ids: List[str], db: SupabaseClient, transform=None, mode="train", batch_size=32, cache_dir="image_cache", max_product_cache_size=1000):
         """
         Args:
             product_ids: List of product IDs to use
@@ -28,6 +30,8 @@ class ProductDataset(Dataset):
             mode: Either "train" or "val". In train mode, only one random query is returned.
                  In val mode, all queries are returned.
             batch_size: Size of batches to load products in
+            cache_dir: Directory to cache downloaded images
+            max_product_cache_size: Maximum number of products to keep in memory cache
         """
         assert mode in ["train", "val"], "Mode must be either 'train' or 'val'"
         self.product_ids = product_ids
@@ -36,45 +40,51 @@ class ProductDataset(Dataset):
         self.mode = mode
         self.batch_size = batch_size
         
-        # Cache for loaded images
-        self._image_cache: Dict[str, Image.Image] = {}
-        # Cache for loaded products
-        self._product_cache: Dict[str, Product] = {}
+        # Create cache directory if it doesn't exist
+        self.cache_dir = pathlib.Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
+        # Configure the LRU cache size
+        self._get_product_cached = lru_cache(maxsize=max_product_cache_size)(self._get_product_uncached)
+
+    def _get_product_uncached(self, product_id: str) -> Product:
+        """Get a product by ID from the database without caching."""
+        
+        # Fetch products
+        products_data = self.db.fetch_products_by_ids([product_id])
+        if not products_data:
+            raise ValueError(f"Product {product_id} not found in database")
+        
+        return Product.from_db_row(products_data[0])
+    
+    def _get_product(self, product_id: str) -> Product:
+        """Get a product by ID, using LRU cache."""
+        return self._get_product_cached(product_id)
+    
     def __len__(self):
         return len(self.product_ids)
     
     def _load_image(self, url: str) -> Optional[Image.Image]:
-        """Load an image from URL with caching."""
-        if url in self._image_cache:
-            return self._image_cache[url]
-            
+        """Load an image from URL with disk caching."""
+        # Create filename from URL hash
+        filename = str(hash(url)) + '.jpg'
+        cache_path = self.cache_dir / filename
+        
+        if cache_path.exists():
+            try:
+                return Image.open(cache_path).convert('RGB')
+            except Exception as e:
+                print(f"Error loading cached image {cache_path}: {e}")
+                cache_path.unlink()  # Delete corrupted cache file
+                
         try:
             response = requests.get(url)
             img = Image.open(BytesIO(response.content)).convert('RGB')
-            self._image_cache[url] = img
+            img.save(cache_path)  # Cache the image
             return img
         except Exception as e:
             print(f"Error loading image {url}: {e}")
             return None
-    
-    def _get_product(self, product_id: str) -> Product:
-        """Get a product by ID, loading from database if necessary."""
-        if product_id not in self._product_cache:
-            # Load the batch of products containing this ID
-            batch_start = (self.product_ids.index(product_id) // self.batch_size) * self.batch_size
-            batch_end = min(batch_start + self.batch_size, len(self.product_ids))
-            batch_ids = self.product_ids[batch_start:batch_end]
-            
-            # Fetch only products not in cache
-            missing_ids = [pid for pid in batch_ids if pid not in self._product_cache]
-            if missing_ids:
-                products_data = self.db.fetch_products_by_ids(missing_ids)
-                for row in products_data:
-                    product = Product.from_db_row(row)
-                    self._product_cache[str(product.id)] = product
-        
-        return self._product_cache[product_id]
     
     def __getitem__(self, idx):
         product_id = self.product_ids[idx]
@@ -91,7 +101,7 @@ class ProductDataset(Dataset):
         # Ensure we have at least one image
         if not images:
             raise ValueError(f"No valid images found for product {product.id}")
-            
+        
         # Stack images into tensor
         images = torch.stack(images)
         
@@ -99,7 +109,7 @@ class ProductDataset(Dataset):
         queries = product.queries
         if self.mode == "train":
             queries = [random.choice(queries)]
-            
+        
         return {
             'product_id': str(product.id),
             'images': images,
@@ -209,3 +219,85 @@ def collate_fn(batch):
         'descriptions': descriptions,
         'all_queries': all_queries
     }
+
+
+def main():
+    """
+    Initialize and test the ProductDataset.
+    """
+    from config import get_supabase_credentials
+    from database import SupabaseClient
+    import torch
+    
+    # Get credentials and initialize DB client
+    credentials = get_supabase_credentials()
+    db = SupabaseClient.get_instance(
+        url=credentials['url'],
+        key=credentials['key']
+    )
+
+    # Create dataset splits
+    dataset_splits = ProductDatasetBuilder()
+    
+    # TODO: This is just a demo transform - for actual inference and training the transforms should be different
+    transform = torchvision.transforms.Compose([
+        torchvision.transforms.Resize((224, 224)),
+        torchvision.transforms.ToTensor()
+    ])
+
+    # Get train and validation datasets
+    train_dataset = dataset_splits.train(transform=transform)
+    val_dataset = dataset_splits.val(transform=transform)
+
+    # Create dataloaders
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=10,
+        shuffle=True,
+        collate_fn=collate_fn
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=10,
+        shuffle=False,
+        collate_fn=collate_fn
+    )
+
+    next(iter(train_loader))
+
+    # print('START')
+    # print(next(iter(train_loader)))
+    # print('FINISH')
+
+    # # Create dataloaders
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset,
+    #     batch_size=32,
+    #     shuffle=True,
+    #     collate_fn=collate_fn
+    # )
+
+    # val_loader = torch.utils.data.DataLoader(
+    #     val_dataset,
+    #     batch_size=32,
+    #     shuffle=False,
+    #     collate_fn=collate_fn
+    # )
+
+    # # Print dataset information
+    # train_size, val_size, test_size = dataset_splits.get_split_sizes()
+    # print(f"Dataset splits - Train: {train_size}, Val: {val_size}, Test: {test_size}")
+
+    # # Test a batch
+    # for batch in train_loader:
+    #     print("\nSample batch:")
+    #     print(f"Images shape: {batch['images'].shape}")
+    #     print(f"Image mask shape: {batch['image_mask'].shape}")
+    #     print(f"Number of descriptions: {len(batch['descriptions'])}")
+    #     print(f"Number of query lists: {len(batch['all_queries'])}")
+    #     break
+
+
+if __name__ == "__main__":
+    main()

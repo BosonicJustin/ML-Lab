@@ -137,15 +137,15 @@ def main():
         train_dataset,
         batch_size=5,
         shuffle=True,
-        num_workers=4,
+        num_workers=0,
         collate_fn=collate_fn
     )
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=3,  # Can use larger batch size for validation
+        batch_size=10,  # Can use larger batch size for validation
         shuffle=False,
-        num_workers=4,
+        num_workers=0,
         collate_fn=collate_fn
     )
     
