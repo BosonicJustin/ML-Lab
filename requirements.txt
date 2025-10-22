@@ -7,3 +7,5 @@ supabase>=1.0.0
 python-dotenv>=1.0.0
 tqdm>=4.65.0
 open_clip_torch>=2.20.0
+sentence-transformers==5.1.0
+datasets==4.0.0
